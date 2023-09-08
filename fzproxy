@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+# This script fetches free proxies using https://github.com/stamparm/fetch-some-proxies
+# and appends them in the correct format at the end of /etc/proxychains.conf for use with proxychains.
+# 
+# Use `fzproxy --country=germany` to list and append only German proxies to /etc/proxychains.conf.
+# All fetch-some-proxies flags can be used as fzproxy flags in the same way.
+#
+# The script assumes that the fetch-some-proxies executable (fetch.py) is located in $HOME/Projects/fetch-some-proxies,
+# edit line 18 here to change that if required.
+#
+# Before first use, you may need to edit /etc/proxychains.conf to comment out or delete all default proxies
+# and add a new line at the end containing `### FZPROXY`, which will be used as a hook for appending new proxies.
+
+TMPPROX=/tmp/proxytemp_"$(date +"%Y%m%d")"
+trap ' ' INT
+python3 /usr/local/src/fetch-some-proxies/fetch.py --out="$TMPPROX" "$1"
+printf "\n---\n"
+read -r -p "Continue with proxy selection? [Y/n] " reply
+
+# If fetching manually interrupted with ctrl+c, then ask whether to abort or select fetched proxies 
+if ! [[ "$reply" =~ ^([nN][oO]|[nN])$ ]]
+then
+    # Abort if no results fetched, else continue
+    if ! [ -s "$TMPPROX" ]
+    then
+        printf "No proxies found. Aborting.\n"
+    else
+        # Remove duplicates if awk installed
+        if type awk >/dev/null
+        then
+            printf "$(awk -F '\t' '!seen[$0]++' "$TMPPROX")" > "$TMPPROX"
+        fi
+        # Format results in a proxychains compatible way
+        sed -i 's/\:\/\// /' "$TMPPROX"
+        sed -i 's/\:/ /' "$TMPPROX"
+        # Select in fzf, delete previous proxies in proxychains.conf, and append selection instead
+        cat "$TMPPROX" | fzf -m -1 --header "Select proxies for proxychains" --bind 'ctrl-a:select-all+accept' \
+            | tee /tmp/proxytempsel > /dev/null
+        sed -e '/FZPROXY/,+200d' /etc/proxychains4.conf | sudo tee /etc/proxychains4.conf > /dev/null
+        printf "### FZPROXY\n" | sudo tee -a /etc/proxychains4.conf > /dev/null
+        cat /tmp/proxytempsel | sudo tee -a /etc/proxychains4.conf > /dev/null
+
+        if ! [ -s "/tmp/proxytempsel" ]
+        then
+            printf "\n🗙 Aborted with no proxy selected.\n"
+        else
+            printf "\n✔ Success! Proxy list for proxychains now replaced with:\n\n"
+            cat /tmp/proxytempsel
+            # Clean selection file
+            rm /tmp/proxytempsel
+        fi
+    fi
+fi
